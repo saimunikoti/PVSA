@@ -7,74 +7,95 @@ Created on Sun Oct 25 16:55:04 2020
 import numpy as np
 import scipy.io as io
 import matplotlib.pyplot as plt
-# from Divf_helping import Divf_simulation
+import sys
+sys.path.append(".")
+from Divf_helping import Divf_simulation, Divf_analytical , Divf_Metrics
 
-# Ds = Divf_simulation()
+Ds = Divf_simulation() 
+Da = Divf_analytical(1, 2.7713)
+Dm  = Divf_Metrics()
+
+projectpath = r"C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\src\data\Divf"
 
 #%% initialization
-actorlist=[22,14,7,17,8]
+actorlist = [22,14,7,17,8]
 
-phaselist=[2,2,2,1,0,]
+phaselist = [2,2,2,1,0,]
 
-## gen covariance matrix of power change
+varparray = [4,3.5,3.0,2.5,2.0]
 
-#sigmaS = Ds.get_covariancematrix(actorlist, phaselist, rho_pp=0, rho_qq=0, pvar=4, qvar=1.2, rho_pq=0)
+varqarray = [1.2,1.1,1.0,0.9,0.8]
+
+rho_pp=0
+rho_qq=0
+rho_pq=0
+
+################################# Simulation load flwo #############################
+
+#%% gen covariance matrix of power change
+
+sigmaS = Ds.get_covariancematrix(actorlist, phaselist, rho_pp=0, rho_qq=0, pvar=[4,4,4,4,4], qvar=[1.2,1.2,1.2,1.2,1.2], rho_pq=0)
 
 ## gene and save power change vector
-
-#Ds.gen_save_powerchangevector(actorlist, phaselist, varp=4, varq=1.2)
-
-#%%  variance of volt change generate deltav_var_actortensor
-
-# deltav_var_actortensor = np.zeros((37,3,len(actorlist)+1)) # 37X3X(# actors +1 )
-
-# ## variance when all actor nodes are present
-# fileext = '_'.join(str(elem) for elem in actorlist)
-
-# filename = r"C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\src\data\Divf\deltav_"+ fileext + "_actor.mat"
-# voltchange_tensor= io.loadmat(filename)
-# voltchange_tensor = voltchange_tensor['voltchange_tensor']
-
-# deltav_var_actortensor[:,:,0] = np.var(voltchange_tensor, axis=2)
-
-# ## variance when actor nodes var are made zero sequentially
-# for countactor in range(0,len(actorlist)):
-        
-#     tempactorlist = actorlist.copy()
-#     tempactorlist.remove(actorlist[countactor])
+Ds.gen_save_powerchangevector(actorlist, phaselist, rho_pp, rho_qq, varparray , varqarray, rho_pq )
     
-#     fileext = '_'.join(str(elem) for elem in tempactorlist)
+#%% find ranks DI actor nodes with load flow in decreasing order
 
-#     filename = r"C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\src\data\Divf\deltav_"+ fileext + "_actor.mat"
-#     voltchange_tensor= io.loadmat(filename)
+deltav_var_actortensor, deltav_vardiff_actortensor = Ds.get_deltav_var_actortensor(actorlist, phaselist)
+             
+DIactorsrank_sim, Diactors_sim = Ds.get_DIranks(deltav_vardiff_actortensor, actorlist)                  
+
+with open(projectpath + "\\DIactorssim_5actors_samevar.pkl", 'wb') as handle:
+   
+    pickle.dump(Diactors_sim, handle)
     
-#     voltchange_tensor = voltchange_tensor['voltchange_tensor']
-        
-#     ## get variance of volt change for diff power change
-       
-#     deltav_var_actortensor[:,:, countactor+1] = np.var(voltchange_tensor, axis=2) # 37X3
+########################### Theoretical #####################################
+#%% ranks and Di actors on the basis of KL distances
+
+voltfilename = projectpath + "\\basevolt_22_14_7_17_8_actor.mat"
+basevolt = io.loadmat(voltfilename)
+basevolt = basevolt['basevolt'] # kv
+
+sigmaS_Actor = Da.get_sigmaS_A(sigmaS)
+
+DIactorsrank_th, Diactors_th = Da.get_DIactorranks_allobs(basevolt, sigmaS, sigmaS_Actor, actorlist)    
+
+fileext = r"C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\src\data\Divf"
+
+with open(fileext + "\\DIactorsth_5actors_samevar.pkl", 'wb') as handle:
+   
+    pickle.dump(Diactors_th, handle)
+
+#%% accuracy
+noloadbus = [1,3,4,10,11,15,20,24,25,29,32,33,35]
+obsnodearray = np.arange(2,38)
+obsnodearray = np.array([elem for elem in obsnodearray if elem not in noloadbus])
+ 
+Acc, TopNacc = Dm.DIaccuracy(Diactors_sim, Diactors_th, obsnodearray, topn, actorlistsize)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
     
 
-#%% get difference of variance when var of each actor node is made zero seq
-# deltav_vardiff_actortensor = np.zeros((37,3,len(actorlist)))
 
-# for i in range(1,len(actorlist)+1):
-#     deltav_vardiff_actortensor[:,:,i-1] = deltav_var_actortensor[:,:,0]- deltav_var_actortensor[:,:,i]
-        
-#%% find DI nodes in decreasing order
-
-np.where(deltav_vardiff_actortensor[obsnode, phase,:]== np.max(deltav_vardiff_actortensor[obsnode, phase,:]))[0]        
-
-ranked = np.argsort(deltav_vardiff_actortensor, axis=2)
-ranked = ranked[:,:,::-1]
-
-actorlistarray = np.array(actorlist)
-
-Diactorstensor = np.zeros((37,3,len(actorlist)))
-
-for countobs in range(37):
-    for countph in range(3):
-        Diactorstensor[countobs, countph, :] = actorlistarray[ranked[countobs, countph,:]]
-
-for xe, ye in zip(x, y):
-    plt.scatter([xe] * len(ye), ye)

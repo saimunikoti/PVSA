@@ -6,18 +6,20 @@ Analtical and MC simulation helping functions
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-
+import pickle
 import scipy.io as io
+import networkx as nx
+from sklearn.metrics import accuracy_score
+import scipy.stats as stats
 
-class Divf_analytical():
+class Divf_analytical():    
     
-    
-    def __init__(self):
+    def __init__(self, source_node, basekv):
         print("Divf analytical class is invoked")
         self.actornodes = np.arange(1, 37)
         self.networkdim =37
-        
+        self.source_node = source_node
+        self.basekv= basekv
 
     def get_CRfunction(self, z, actorbasevolt ):
         
@@ -79,7 +81,7 @@ class Divf_analytical():
             cr_temp = self.get_CRfunction(ztensor[voltphase,countphase,:], basevolt[:,countphase] )
             cr_a = np.concatenate((cr_a, cr_temp), axis=0)
             
-        cr_a = np.reshape(cr_a,(cr_a.shape[0],1))   # returns in kilo 
+        # cr_a = np.reshape(cr_a,(cr_a.shape[0],1))   # returns in kilo 
         return cr_a    
     
     
@@ -96,10 +98,28 @@ class Divf_analytical():
             ci_temp = self.get_CIfunction(ztensor[voltphase,countphase,:], basevolt[:,countphase] )
             ci_a = np.concatenate((ci_a, ci_temp), axis=0)
             
-        ci_a = np.reshape(ci_a,(ci_a.shape[0],1))   # returns in kilo    
+        # ci_a = np.reshape(ci_a,(ci_a.shape[0],1))   # returns in kilo    
+        
         return ci_a      
     
     ############ get impedance of the shared path between obs node and actor. 
+    def get_commonpath(self, actor_node, obs_node):
+        
+        G = nx.Graph()
+        
+        G.add_edges_from([(1,2),(2,3),(3,4),(3,28),(28,29),
+                          (29,30),(30,31),(29,32),(32,35),(35,37),(35,36),
+                          (32,33),(33,34),(3,25),(25,26),(25,27),(4,5),
+                          (5,6),(6,7),(6,8),(4,9),
+                          (9,10),(10,24),(10,23),(10,11),(11,12),(11,13),(13,14),(14,15),
+                          (15,17),(15,16),(14,18),(18,19),(19,20),(20,21),
+                          (20,22)])
+        
+        l1 = nx.shortest_path(G, source=self.source_node, target= actor_node)
+        l2 = nx.shortest_path(G, source=self.source_node, target= obs_node)
+        commonpath = sorted(set(l1) & set(l2), key = l1.index) 
+        
+        return commonpath
     
     def get_pathimpedance(self,actornode, obsnode):
 
@@ -124,6 +144,7 @@ class Divf_analytical():
         sumimp = 0
         
         linedata = pd.read_excel(r'C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\data\processed\Lineconfig.xlsx') 
+        
         for iind in range(len(commonpath)-1):
             
             temprow = linedata[(linedata['Node A']==commonpath[iind]) & (linedata['Node B']==commonpath[iind+1])]
@@ -149,9 +170,10 @@ class Divf_analytical():
         return sumimp
     
     def get_ztensor(self, obsnode):
+        
         """
         input obsnode: the node number in original format
-        output- ztensor: 3X3X37
+        output- ztensor: 3X3X37 for all nodes 
         
         """
         
@@ -162,6 +184,7 @@ class Divf_analytical():
             try:
                 ztensor[:,:,actornode] = self.get_pathimpedance(actornode+1, obsnode)
             except:
+                print("exception in ztensor enters",actornode)
                 ztensor[:,:,actornode] = np.zeros((3,3))
                 
         return ztensor
@@ -198,7 +221,7 @@ class Divf_analytical():
         return sigmaS_Actor  
     
     # probability distribution of voolt change due to all actor nodes                        
-    def gen_voltchngdist_multipleactor(self, ztensor, sigmaS, basevolt, nsamples):
+    def gen_voltchngdist_multipleactor(self, ztensor, sigmaS, basevolt, nsamples=100000):
         """
         Input : ztensor: 3x3x37
                 sigmaS : 6Nx6N
@@ -225,11 +248,11 @@ class Divf_analytical():
             
             tempm = np.matmul(sigmaS,CR)  
             sigma_deltavolt_allphase[0,0,voltphase] = np.matmul(CR.T, tempm)
-            dvoltreal_abc[:,voltphase] = np.random.multivariate_normal([0],sigma_deltavolt_allphase[0,0,voltphase], nsamples)[:,0]  
-    
+            dvoltreal_abc[:,voltphase] = np.random.normal(loc=0, scale=np.sqrt(sigma_deltavolt_allphase[0,0,voltphase]), size=nsamples)
+                                        
             tempm = np.matmul(sigmaS,CI)  
             sigma_deltavolt_allphase[1,1, voltphase] = np.matmul(CI.T, tempm)
-            dvoltimag_abc[:,voltphase] = np.random.multivariate_normal([0], sigma_deltavolt_allphase[1,1, voltphase], nsamples)[:,0]   
+            dvoltimag_abc[:,voltphase] = np.random.normal(loc=0, scale=np.sqrt(sigma_deltavolt_allphase[1,1, voltphase]), size=nsamples)   
 
             tempm = np.matmul(sigmaS,CI)  
             sigma_deltavolt_allphase[0,1, voltphase] = np.matmul(CR.T, tempm)
@@ -266,16 +289,16 @@ class Divf_analytical():
         # loop for dist. of volt chnage in three phases                    
         for voltphase in range(3): 
 
-            CR_A = [CR_allphase[self.networkdim*i + actornode-1, voltphase] for i in range(6)]
-            CI_A = [CI_allphase[self.networkdim*i + actornode-1, voltphase] for i in range(6)]
+            CR_A = np.array([CR_allphase[self.networkdim*i + actornode-1, voltphase] for i in range(6)])
+            CI_A = np.array([CI_allphase[self.networkdim*i + actornode-1, voltphase] for i in range(6)])
                         
             tempm = np.matmul(sigmaS_Actor[:,:,actornode-1],CR_A)  
             sigma_deltavolt_Actor_allphase[0,0,voltphase] = np.matmul(CR_A.T, tempm)
-            dvoltreal_abc[:,voltphase] = np.random.multivariate_normal([0], sigma_deltavolt_Actor_allphase[0,0,voltphase], nsamples)[:,0]  
+            dvoltreal_abc[:,voltphase] = np.random.normal(loc = 0, scale= np.sqrt(sigma_deltavolt_Actor_allphase[0,0,voltphase]), size = nsamples) 
     
             tempm = np.matmul(sigmaS_Actor[:,:,actornode-1],CI_A)  
             sigma_deltavolt_Actor_allphase[1,1, voltphase] = np.matmul(CI_A.T, tempm)
-            dvoltimag_abc[:,voltphase] = np.random.multivariate_normal([0], sigma_deltavolt_Actor_allphase[1,1, voltphase], nsamples)[:,0]   
+            dvoltimag_abc[:,voltphase] = np.random.normal(loc=0, scale= np.sqrt(sigma_deltavolt_Actor_allphase[1,1, voltphase]), size = nsamples)
 
             tempm = np.matmul(sigmaS_Actor[:,:,actornode-1],CI_A)  
             sigma_deltavolt_Actor_allphase[0,1, voltphase] = np.matmul(CR_A.T, tempm)
@@ -289,6 +312,7 @@ class Divf_analytical():
 
         return sigma_deltavolt_Actor_allphase, dvoltreal_abc, dvoltimag_abc, dvoltabs_abc
     
+    
     def gen_voltchngdist_singleactor_tensor(self, CR_allphase, CI_allphase, sigmaS_Actor, nsamples=100000):
         """
         input - CR_allphase, CI_allphase, sigmaS_Actor, # of actornodes
@@ -298,12 +322,13 @@ class Divf_analytical():
         sigma_deltavolt_Actor_allphase_tensor = np.zeros((self.networkdim,2,2,3))
         
         for actornode in range(1, self.networkdim+1):
-            sigma_deltavolt_Actor_allphase_tensor[actornode-1,:,:,:] = self.gen_voltchngdist_singleactor(CR_allphase, CI_allphase, sigmaS_Actor, actornode)
+            sigma_deltavolt_Actor_allphase_tensor[actornode-1,:,:,:],_,_,_ = self.gen_voltchngdist_singleactor(CR_allphase, CI_allphase, sigmaS_Actor, actornode)
         
         return sigma_deltavolt_Actor_allphase_tensor
     
-    ## get optimal actor nodes for KL divergence metric
-    def get_optimnode_kl(self, obsnode, sigma_deltavolt_allphase, sigma_deltavolt_Actor_allphase_tensor):
+    ## get KL divergence metric for all actor nodes and a specific obs node
+    def get_kldistance(self, sigma_deltavolt_allphase, sigma_deltavolt_Actor_allphase_tensor, actorlist):
+        
         """
         input -sigma_deltavolt_allphase: 2X2X3
             sigma_deltavolt_Actor_allphase_tensor: 37X2X2X3
@@ -311,38 +336,84 @@ class Divf_analytical():
         output- DI_KL: vector of distances for all actor and phases (37,3)
         """
         
-        Di_KL = np.zeros(shape=(self.networkdim,3))
+        Diactors = np.zeros(shape=(len(actorlist),3))
         
         ## zero mean power change 
         mu = np.zeros(shape=(2,1))
         mu_A = np.zeros((2,1))
+        mu_diff = mu-mu_A
         
-        for actornode in range(1, self.networkdim+1): 
+        for countactor, actornode in enumerate(actorlist): 
             
             for voltphase in range(3):
                 
-                sigma_dvoltinv = np.inv(sigma_deltavolt_allphase[:,:,voltphase])
+                sigma_dvoltinv = np.linalg.inv(sigma_deltavolt_allphase[:,:,voltphase])
+                
                 sigma_dvoltA = sigma_deltavolt_Actor_allphase_tensor[actornode-1,:,:,voltphase]
-            
-                Di_KL[actornode-1,voltphase] = 0.5(np.trace(np.matmul(sigma_dvoltinv, sigma_dvoltA)) -2 + \
-                               np.matmul( (mu-mu_A), np.matmul( sigma_dvoltinv, (mu-mu_A)) ) + \
-                               np.log(np.linalg.det(sigma_deltavolt_allphase[:,:, voltphase])/np.linalg.det(sigma_dvoltA)) )
-            
-        return Di_KL # check the correct numbering of actor nodes
-            
-    def get_optimnode_fd(self, obsnode, phase):
+                
+                part1 = np.trace(np.matmul(sigma_dvoltinv, sigma_dvoltA))
+                
+                part2 = np.matmul( mu_diff.T, np.matmul( sigma_dvoltinv, mu_diff) ) 
+                
+                part3 = np.log(np.linalg.det(sigma_deltavolt_allphase[:,:, voltphase])/np.linalg.det(sigma_dvoltA)) 
+                
+                Diactors[countactor,voltphase] = 0.5*(part1 -2 + part2 + part3 )
         
-        sigma_dvolt = self.gen_voltchngdist_multipleactor(obsnode, phase)
         
-        DI_fd = np.zeros(shape=(len(self.actornodes),1))
-        for countactor in self.actornodes:
-            sigma_dvoltA = self.gen_voltchngdist_singleactor(obsnode, countactor, phase)
+        DIobsnode_actorranks = np.argsort(Diactors, axis=0)
+        
+        
+        return DIobsnode_actorranks # check the correct numbering of actor nodes
+    
+     # get ranks and actor nodes for all obse node with KL div distance    
+    def get_DIactorranks_allobs(self, basevolt, sigmaS, sigmaS_Actor, actorlist):
+        
+        """
+        input - basevolt, actorlist, sigmaS, sigmaS_Actor
+                
+        output- Diactors_th: tensor for obse nodes with actors nodes in decreasing order
+                of their influence (37,3,actors)
+        """ 
+        
+        DIactorsrank_th = np.zeros((37,3,len(actorlist)))
+        
+        for obsnode in range(2,38):
             
-            DI_fd[countactor] = "Frechet formula"
+            ztensor = self.get_ztensor(obsnode)
             
-        return np.argmin(DI_fd) # check the correct numbering of actor nodes
+            sigma_deltavolt_allphase, CR_allphase, CI_allphase, _ , _ , _ = self.gen_voltchngdist_multipleactor(ztensor, sigmaS, basevolt)
+        
+            sigma_deltavolt_Actor_allphase_tensor = self.gen_voltchngdist_singleactor_tensor(CR_allphase, CI_allphase, sigmaS_Actor)
+        
+            DIobsnode_actorranks = self.get_kldistance(sigma_deltavolt_allphase, sigma_deltavolt_Actor_allphase_tensor, actorlist)
+            
+            DIactorsrank_th[obsnode-1,:,:] = DIobsnode_actorranks.T
+            
+        actorlistarray = np.array(actorlist)
+        Diactors_th = np.zeros((self.networkdim, 3 , len(actorlist)))    
 
-##########################  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% ##################
+        DIactorsrank_th = DIactorsrank_th.astype(int)
+        
+        ## for accessing actornodes from 
+        for countobs in range(1, self.networkdim):
+            for countph in range(3):
+                Diactors_th[countobs, countph, :] = actorlistarray[DIactorsrank_th[countobs, countph,:]]
+ 
+        return DIactorsrank_th, Diactors_th
+    
+    # def get_optimnode_fd(self, obsnode, phase):
+        
+    #     sigma_dvolt = self.gen_voltchngdist_multipleactor(obsnode, phase)
+        
+    #     DI_fd = np.zeros(shape=(len(self.actornodes),1))
+    #     for countactor in self.actornodes:
+    #         sigma_dvoltA = self.gen_voltchngdist_singleactor(obsnode, countactor, phase)
+            
+    #         DI_fd[countactor] = "Frechet formula"
+            
+    #     return np.argmin(DI_fd) # check the correct numbering of actor nodes
+
+####################### %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% ##################
 ## class with help functions for generating distribution from Load flow simulation
 
 class Divf_simulation():
@@ -364,7 +435,7 @@ class Divf_simulation():
         """
         dim = 6*self.networkdim
         
-        sigma_s = np.zeros((dim,dim))
+        sigma_s = np.zeros((dim,dim),dtype= float)
         power_index = {}
         power_index[0]=0
         power_index[1]=2
@@ -376,69 +447,77 @@ class Divf_simulation():
         reactivep_index[2]=5
                
         ######### updating cross cov between p and q 
-        for (activep,phasep) in zip(actorlist, phaselist):
+        for countp,(activep,phasep) in enumerate(zip(actorlist, phaselist)):
             phasenop = power_index[phasep]
             pindex= phasenop*self.networkdim + (activep-1)
-            for (reactivep,phaseq) in zip(actorlist, phaselist):
+            
+            for countq, (reactivep,phaseq) in enumerate(zip(actorlist, phaselist)):
 
                 if phasep == phaseq:
                     phasenoq = reactivep_index[phaseq]
                     qindex =  phasenoq*self.networkdim + (reactivep-1)
-                    sigma_s[pindex,qindex] = rho_pq*np.sqrt(pvar)*np.sqrt(qvar)
-                    sigma_s[qindex,pindex] = rho_pq*np.sqrt(pvar)*np.sqrt(qvar)
+                    sigma_s[pindex, qindex] = rho_pq*np.sqrt(pvar[countp])*np.sqrt(qvar[countq])
+                    sigma_s[qindex, pindex] = rho_pq*np.sqrt(pvar[countp])*np.sqrt(qvar[countq])
                     
         del pindex, qindex, phasenop, phasenoq
            
         ######### updating cov between active power
-        for (activep,phasep) in zip(actorlist, phaselist):
+        for countp,(activep,phasep) in enumerate(zip(actorlist, phaselist)):
             
             ############## active power cov
+            
             phasenop = power_index[phasep]
             pindex = phasenop*self.networkdim+(activep-1)
-            for (reactivep,phaseq) in zip(actorlist, phaselist):
+            
+            for countq, (reactivep,phaseq) in enumerate(zip(actorlist, phaselist)):
 
                 if phasep == phaseq: # active p cov for same phase 
                     phasenoq = power_index[phaseq]
                     qindex =  phasenoq*self.networkdim+(reactivep-1)
                     if activep == reactivep: # active p for variance 
-                        sigma_s[pindex,qindex] = pvar
-                        sigma_s[qindex,pindex] = pvar
+                        #print(countp,countq, activep, reactivep)
+                        sigma_s[pindex,qindex] = pvar[countp]
+                        sigma_s[qindex,pindex] = pvar[countp]
                     else:    # active p cov but same phase 
-                        sigma_s[pindex,qindex] = rho_pp*pvar
-                        sigma_s[qindex,pindex] = rho_pp*pvar
+                        #print("not same actor",countp,countq)
+                        sigma_s[pindex,qindex] = rho_pp*np.sqrt(pvar[countp])*np.sqrt(pvar[countq])
+                        sigma_s[qindex,pindex] = rho_pp*np.sqrt(pvar[countp])*np.sqrt(pvar[countq])
                         
             del pindex, qindex, phasenop, phasenoq ,reactivep ,phaseq 
             
             ############## reactive power cov
             phasenop = reactivep_index[phasep]
-            pindex = phasenop*self.networkdim+(activep-1)            
-            for (reactivep,phaseq) in zip(actorlist, phaselist):
+            pindex = phasenop*self.networkdim+(activep-1)   
+            
+            for countq,(reactivep,phaseq) in enumerate(zip(actorlist, phaselist)):
 
                 if phasep == phaseq: # reactive q cov for same phase 
                     phasenoq = reactivep_index[phaseq]
                     qindex =  phasenoq*self.networkdim+(reactivep-1)
                     if activep == reactivep: # reactive q for variance 
-                        sigma_s[pindex,qindex] = qvar
-                        sigma_s[qindex,pindex] = qvar
+                        #print(countp,countq, activep, reactivep)
+                        sigma_s[pindex,qindex] = qvar[countq]
+                        sigma_s[qindex,pindex] = qvar[countq]
                     else:    # reactive q cov but same phase 
-                        sigma_s[pindex,qindex] = rho_qq*qvar
-                        sigma_s[qindex,pindex] = rho_qq*qvar
+                        #print("not same actor",countp,countq)
+                        sigma_s[pindex,qindex] = rho_qq*np.sqrt(qvar[countp])*np.sqrt(qvar[countq])
+                        sigma_s[qindex,pindex] = rho_qq*np.sqrt(qvar[countp])*np.sqrt(qvar[countq])
                     
         return sigma_s 
     
-    ## generate and save power change vector         
-    def gen_save_powerchangevector(self, actorlist, phaselist, varp=4, varq =1.2, nsamples=100000):
+    ## generate and save power change vector for diff actor nodes comb        
+    def gen_save_powerchangevector(self, actorlist, phaselist, rho_pp, rho_qq, varparray, varqarray, rho_pq, nsamples=100000):
         
         """
         input: sigmaS cov matrix, actorlist, phaselist, varp, varq
         output: multiple instances of power change vector (nsamples X 222) with all actor nodes
                 multiple instnces of power change vector with vari of each actor nodes as zero
-        
         """ 
         
-        sigmaS = self.get_covariancematrix(actorlist, phaselist, rho_pp=0, rho_qq=0, pvar=varp, qvar=varq, rho_pq=0)
+        sigmaS = self.get_covariancematrix(actorlist, phaselist, rho_pp, rho_qq, varparray, varqarray, rho_pq)
         
-       
+        print("non zero count", np.count_nonzero(sigmaS))
+        
         mean = np.zeros(shape=(6*self.networkdim))        
         powervec = np.random.multivariate_normal(mean, sigmaS, nsamples)
         
@@ -454,10 +533,14 @@ class Divf_simulation():
             
             tempactorlist = actorlist.copy()
             tempphaselist = phaselist.copy()
+            tempvarp = varparray.copy()
+            tempvarq = varqarray.copy()
             tempactorlist.remove(actorlist[countactor])
             tempphaselist.remove(phaselist[countactor])
+            tempvarp.remove(varparray[countactor])
+            tempvarq.remove(varqarray[countactor])
                     
-            sigmaStemp = self.get_covariancematrix(tempactorlist, tempphaselist, rho_pp=0, rho_qq=0, pvar=4, qvar=1.2, rho_pq=0)
+            sigmaStemp = self.get_covariancematrix(tempactorlist, tempphaselist, rho_pp, rho_qq, tempvarp, tempvarq, rho_pq)
                              
             powervec = np.random.multivariate_normal(mean, sigmaStemp, nsamples)
             
@@ -467,10 +550,11 @@ class Divf_simulation():
             tempdic['powervec'] = powervec
             
             filename = r"C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\src\data\Divf\powervec_"+ fileext + ".mat"
-            
+            print("save done for actor node", countactor)
             io.savemat(filename, tempdic)         
-    
-    def get_deltav_var_actortensor(self,actorlist, phaselist):
+            
+    ## get the var of delta voltage generated from power change vector in matlab
+    def get_deltav_var_actortensor(self, actorlist, phaselist):
         
         """
         input: actorlist, phaselist
@@ -505,7 +589,7 @@ class Divf_simulation():
             voltchange_tensor= io.loadmat(filename)
             
             voltchange_tensor = voltchange_tensor['voltchange_tensor']
-                
+            print("computing var for actornodes ", fileext )
             ## get variance of volt change for diff power change
                
             deltav_var_actortensor[:,:, countactor+1] = np.var(voltchange_tensor, axis=2) # 37X3
@@ -539,11 +623,53 @@ class Divf_simulation():
         for countobs in range(self.networkdim):
             for countph in range(3):
                 Diactors_tensor[countobs, countph, :] = actorlistarray[ranked[countobs, countph,:]]
-
+                            
         return ranked, Diactors_tensor
        
+
+class Divf_Metrics():
+    
+    def __init__(self):
         
+        filename = r"C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\data\processed\Baseload_phases_37bus.xlsx"
+
+        phasedf = pd.read_excel(filename)
+        print("metric class is invoked")
+        self.phasedict = dict(zip(phasedf.Busno, phasedf.phaseinfo))
         
+        self.noloadbus = [1,3,4,10,11,15,20,24,25,29,32,33,35]
+        
+    def DIaccuracy(self, Diactors_sim, Diactors_th, obsnodearray, topn, actorlistsize):
+    
+        phaseinfo = np.array([self.phasedict[x] for x in obsnodearray])
+                
+        endindex = int(np.ceil(topn*actorlistsize))
+        
+        Di_sim  = Diactors_sim[obsnodearray-1, phaseinfo , 0:endindex]
+        Di_th = Diactors_th[obsnodearray-1, phaseinfo , 0:endindex]
+          
+        Acc = accuracy_score(Di_sim[:,0], Di_th[:,0])*100
+        
+        Topnacc= []
+        for obsind in range(len(obsnodearray)):
+            
+            Topnacc.append(np.mean(np.array([1 if Di_sim[obsind, k] in Di_th[obsind,:] else 0 for k in range(endindex)] )))
+        
+        return Acc, np.array(Topnacc)
+    
+    def get_Kendallstau(self,  Diactors_sim, Diactors_th, obsnodearray, topn, actorlistsize):
+    
+        phaseinfo = np.array([self.phasedict[x] for x in obsnodearray])
+        
+        endindex = int(np.ceil(topn*actorlistsize))
+        
+        Di_sim = Diactors_sim[obsnodearray-1, phaseinfo, 0: endindex]
+        Di_th =  Diactors_th[obsnodearray-1, phaseinfo, 0: endindex]
+    
+        Kt = np.array([stats.kendalltau(Di_sim[ind,:], Di_th[ind,:])[0] for ind in range(obsnodearray.shape[0])])
+        
+        return Kt, np.mean(Kt)
+            
         
         
         
