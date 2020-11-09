@@ -11,15 +11,17 @@ import scipy.io as io
 import networkx as nx
 from sklearn.metrics import accuracy_score
 import scipy.stats as stats
+from scipy.linalg import sqrtm, norm
 
 class Divf_analytical():    
     
-    def __init__(self, source_node, basekv):
+    def __init__(self, source_node, basekv, projectpath):
         print("Divf analytical class is invoked")
         self.actornodes = np.arange(1, 37)
         self.networkdim =37
         self.source_node = source_node
         self.basekv= basekv
+        self.projectpath = projectpath
 
     def get_CRfunction(self, z, actorbasevolt ):
         
@@ -359,12 +361,123 @@ class Divf_analytical():
                 
                 Diactors[countactor,voltphase] = 0.5*(part1 -2 + part2 + part3 )
         
+        print("actor node completed ", countactor+1)
+               
+        DIobsnode_actorranks = np.argsort(Diactors, axis=0)
+        Diactors = np.sort(Diactors, axis=0)
+                
+        return DIobsnode_actorranks.T, Diactors.T # check the correct numbering of actor nodes
+    
+    def get_frechetdistance(self,sigma_deltavolt_allphase , sigma_deltavolt_Actor_allphase_tensor, actorlist):
+        
+        """
+        input -sigma_deltavolt_allphase: 2X2X3
+            sigma_deltavolt_Actor_allphase_tensor: 37X2X2X3
+                
+        output- DI_FD: vector of distances for all actor and phases (37,3)
+        """
+        
+        Diactors = np.zeros(shape=(len(actorlist),3))   
+        
+        ## zero mean power change 
+        mu = np.zeros(shape=(2,1))
+        mu_A = np.zeros((2,1))
+        for countactor, actornode in enumerate(actorlist): 
+            
+            for voltphase in range(3):
+                
+                sigma_dvolt = sigma_deltavolt_allphase[:,:,voltphase]
+
+                part1 = np.square(norm(mu- mu_A, 2))
+        
+                sigma_dvoltA = sigma_deltavolt_Actor_allphase_tensor[actornode-1,:,:,voltphase]
+
+                part2 = sigma_dvolt + sigma_dvoltA -2*sqrtm(np.matmul(sigma_dvoltA,sigma_dvolt))
+
+                Diactors[countactor,voltphase] = part1 + np.trace(part2)
+               
+        print("actor node completed ", countactor+1)
         
         DIobsnode_actorranks = np.argsort(Diactors, axis=0)
+        Diactors = np.sort(Diactors, axis=0)
         
+        return DIobsnode_actorranks.T, Diactors.T
+
+    ## get bhattacharyya distance
+    def get_bhattacharyyadistance(self,sigma_deltavolt_allphase , sigma_deltavolt_Actor_allphase_tensor, actorlist):
         
-        return DIobsnode_actorranks # check the correct numbering of actor nodes
+        """
+        input -sigma_deltavolt_allphase: 2X2X3
+            sigma_deltavolt_Actor_allphase_tensor: 37X2X2X3
+                
+        output- DI_BD: vector of distances for all actor and phases (37,3)
+        """
+        
+        Diactors = np.zeros(shape=(len(actorlist),3))   
+        
+        ## zero mean power change 
+        mu = np.zeros(shape=(2,1))
+        mu_A = np.zeros((2,1))
+        mu_diff = mu-mu_A
+        
+        for countactor, actornode in enumerate(actorlist): 
+            
+            for voltphase in range(3):
+                
+                sigma_dvolt = sigma_deltavolt_allphase[:,:,voltphase]
+                
+                sigma_dvoltA = sigma_deltavolt_Actor_allphase_tensor[actornode-1,:,:,voltphase]
+
+                sigma = (sigma_dvolt + sigma_dvoltA)/2
+                               
+        
+                part1 = np.matmul( mu_diff.T, np.matmul(np.linalg.inv(sigma), mu_diff) ) 
+                
+                part2 = np.linalg.det(sigma)/(np.sqrt(np.linalg.det(sigma_dvolt)*np.linalg.det(sigma_dvoltA) ))
+
+                Diactors[countactor,voltphase] = 0.125*part1 + 0.5*np.log(part2)
+               
+        print("actor node completed ", countactor+1)
+        # rank in ascending order for argmin
+        DIobsnode_actorranks = np.argsort(Diactors, axis=0)
+        Diactors = np.sort(Diactors, axis=0)
+        
+        return DIobsnode_actorranks.T , Diactors.T  
     
+    
+     # differential entrop of voltage change distribution
+    def get_diffentropy(self, sigma_deltavolt_Actor_allphase_tensor, actorlist):
+        
+        """
+        input -sigma_deltavolt_allphase: 2X2X3
+            sigma_deltavolt_Actor_allphase_tensor: 37X2X2X3
+                
+        output- DI_DE: vector of distances for all actor and phases (37,3)
+        """
+        
+        Diactors = np.zeros(shape=(len(actorlist),3))   
+                
+        for countactor, actornode in enumerate(actorlist): 
+            
+            for voltphase in range(3):
+                 
+                sigma_dvoltA = sigma_deltavolt_Actor_allphase_tensor[actornode-1,:,:,voltphase]
+
+                part1 = np.square(2*np.pi*2.718)
+    
+                Diactors[countactor,voltphase] = 0.5*np.log(part1 * np.linalg.det(sigma_dvoltA) )
+               
+        print("actor node completed ", countactor+1)
+        
+        # rank in descendng order for argmax
+        DIobsnode_actorranks = np.argsort(Diactors, axis=0)
+        DIobsnode_actorranks = DIobsnode_actorranks[::-1]
+        
+        Diactors = np.sort(Diactors, axis=0)
+        Diactors = Diactors[::-1]
+        
+        return DIobsnode_actorranks.T, Diactors.T
+        
      # get ranks and actor nodes for all obse node with KL div distance    
     def get_DIactorranks_allobs(self, basevolt, sigmaS, sigmaS_Actor, actorlist):
         
@@ -375,7 +488,15 @@ class Divf_analytical():
                 of their influence (37,3,actors)
         """ 
         
-        DIactorsrank_th = np.zeros((37,3,len(actorlist)))
+        DIactorsrank_th_kl = np.zeros((37,3,len(actorlist)))
+        DIactorsrank_th_fd = np.zeros((37,3,len(actorlist)))
+        DIactorsrank_th_bd = np.zeros((37,3,len(actorlist)))
+        DIactorsrank_th_de = np.zeros((37,3,len(actorlist)))
+        
+        DIobsnode_distance_kl = np.zeros((37,3,len(actorlist)))
+        DIobsnode_distance_fd = np.zeros((37,3,len(actorlist)))
+        DIobsnode_distance_bd = np.zeros((37,3,len(actorlist)))
+        DIobsnode_distance_de = np.zeros((37,3,len(actorlist)))
         
         for obsnode in range(2,38):
             
@@ -385,44 +506,54 @@ class Divf_analytical():
         
             sigma_deltavolt_Actor_allphase_tensor = self.gen_voltchngdist_singleactor_tensor(CR_allphase, CI_allphase, sigmaS_Actor)
         
-            DIobsnode_actorranks = self.get_kldistance(sigma_deltavolt_allphase, sigma_deltavolt_Actor_allphase_tensor, actorlist)
-            
-            DIactorsrank_th[obsnode-1,:,:] = DIobsnode_actorranks.T
+            DIactorsrank_th_kl[obsnode-1,:,:], DIobsnode_distance_kl[obsnode-1,:,:] = self.get_kldistance(sigma_deltavolt_allphase, sigma_deltavolt_Actor_allphase_tensor, actorlist)
+            DIactorsrank_th_fd[obsnode-1,:,:], DIobsnode_distance_fd[obsnode-1,:,:] = self.get_frechetdistance(sigma_deltavolt_allphase, sigma_deltavolt_Actor_allphase_tensor, actorlist)
+            DIactorsrank_th_bd[obsnode-1,:,:], DIobsnode_distance_bd[obsnode-1,:,:] = self.get_bhattacharyyadistance(sigma_deltavolt_allphase, sigma_deltavolt_Actor_allphase_tensor, actorlist)
+            DIactorsrank_th_de[obsnode-1,:,:], DIobsnode_distance_de[obsnode-1,:,:] = self.get_diffentropy(sigma_deltavolt_Actor_allphase_tensor, actorlist)
+
+            # DIactorsrank_th_kl[obsnode-1,:,:] = DIobsnode_actorranks_kl.T
+            # DIactorsrank_th_fd[obsnode-1,:,:] = DIobsnode_actorranks_fd.T
+            # DIactorsrank_th_bd[obsnode-1,:,:] = DIobsnode_actorranks_bd.T
+            # DIactorsrank_th_de[obsnode-1,:,:] = DIobsnode_actorranks_de.T
+
+
+            print("obs node completed", obsnode)
             
         actorlistarray = np.array(actorlist)
-        Diactors_th = np.zeros((self.networkdim, 3 , len(actorlist)))    
-
-        DIactorsrank_th = DIactorsrank_th.astype(int)
         
-        ## for accessing actornodes from 
+        Diactors_kl = np.zeros((self.networkdim, 3 , len(actorlist)))    
+        Diactors_fd = np.zeros((self.networkdim, 3 , len(actorlist))) 
+        Diactors_bd = np.zeros((self.networkdim, 3 , len(actorlist))) 
+        Diactors_de = np.zeros((self.networkdim, 3 , len(actorlist))) 
+       
+        DIactorsrank_th_kl = DIactorsrank_th_kl.astype(int)
+        DIactorsrank_th_fd = DIactorsrank_th_fd.astype(int)
+        DIactorsrank_th_bd = DIactorsrank_th_bd.astype(int)
+        DIactorsrank_th_de = DIactorsrank_th_de.astype(int)
+        
+        ## for accessing actornodes from ranks
         for countobs in range(1, self.networkdim):
             for countph in range(3):
-                Diactors_th[countobs, countph, :] = actorlistarray[DIactorsrank_th[countobs, countph,:]]
- 
-        return DIactorsrank_th, Diactors_th
+                Diactors_kl[countobs, countph, :] = actorlistarray[DIactorsrank_th_kl[countobs, countph,:]]
+                Diactors_fd[countobs, countph, :] = actorlistarray[DIactorsrank_th_fd[countobs, countph,:]]
+                Diactors_bd[countobs, countph, :] = actorlistarray[DIactorsrank_th_bd[countobs, countph,:]]
+                Diactors_de[countobs, countph, :] = actorlistarray[DIactorsrank_th_de[countobs, countph,:]]
+        
+        
+        return DIobsnode_distance_kl, Diactors_kl, DIobsnode_distance_fd, Diactors_fd, DIobsnode_distance_bd, Diactors_bd, DIobsnode_distance_de, Diactors_de
     
-    # def get_optimnode_fd(self, obsnode, phase):
-        
-    #     sigma_dvolt = self.gen_voltchngdist_multipleactor(obsnode, phase)
-        
-    #     DI_fd = np.zeros(shape=(len(self.actornodes),1))
-    #     for countactor in self.actornodes:
-    #         sigma_dvoltA = self.gen_voltchngdist_singleactor(obsnode, countactor, phase)
-            
-    #         DI_fd[countactor] = "Frechet formula"
-            
-    #     return np.argmin(DI_fd) # check the correct numbering of actor nodes
 
 ####################### %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% ##################
 ## class with help functions for generating distribution from Load flow simulation
 
 class Divf_simulation():
         
-    def __init__(self):
+    def __init__(self, projectpath):
         
         print("Divf simulation class is invoked")
         
         self.networkdim =37
+        self.projectpath = projectpath
     
     ## generate covariance matrixc for given variance and correlation coefficient
     def get_covariancematrix(self, actorlist, phaselist, rho_pp, rho_qq, pvar, qvar, rho_pq):
@@ -524,7 +655,7 @@ class Divf_simulation():
         fileext = '_'.join(str(elem) for elem in actorlist)
         tempdic={}
         tempdic['powervec'] = powervec
-        filename = r"C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\src\data\Divf\powervec_"+ fileext + ".mat"
+        filename = self.projectpath +  "powervec_"+ fileext + ".mat"
         io.savemat(filename, tempdic)
         
         ## gen and save power change vector with variance set to zero 
@@ -549,7 +680,7 @@ class Divf_simulation():
             tempdic={}
             tempdic['powervec'] = powervec
             
-            filename = r"C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\src\data\Divf\powervec_"+ fileext + ".mat"
+            filename = self.projectpath +"powervec_"+ fileext + ".mat"
             print("save done for actor node", countactor)
             io.savemat(filename, tempdic)         
             
@@ -571,7 +702,7 @@ class Divf_simulation():
         ## variance when all actor nodes are present
         fileext = '_'.join(str(elem) for elem in actorlist)
         
-        filename = r"C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\src\data\Divf\deltav_"+ fileext + "_actor.mat"
+        filename = self.projectpath + "deltav_" + fileext + "_actor.mat"
         voltchange_tensor= io.loadmat(filename)
         voltchange_tensor = voltchange_tensor['voltchange_tensor']
         
@@ -585,7 +716,7 @@ class Divf_simulation():
             
             fileext = '_'.join(str(elem) for elem in tempactorlist)
         
-            filename = r"C:\Users\saimunikoti\Manifestation\DOE_Work\PVSA\pvsa_3phase\src\data\Divf\deltav_"+ fileext + "_actor.mat"
+            filename = self.projectpath + "deltav_" + fileext + "_actor.mat"
             voltchange_tensor= io.loadmat(filename)
             
             voltchange_tensor = voltchange_tensor['voltchange_tensor']
@@ -635,19 +766,35 @@ class Divf_Metrics():
 
         phasedf = pd.read_excel(filename)
         print("metric class is invoked")
+        
         self.phasedict = dict(zip(phasedf.Busno, phasedf.phaseinfo))
         
         self.noloadbus = [1,3,4,10,11,15,20,24,25,29,32,33,35]
         
-    def DIaccuracy(self, Diactors_sim, Diactors_th, obsnodearray, topn, actorlistsize):
+    def DIaccuracy(self, Diactors_sim, Diactorsdist_th,  Diactors_th, obsnodearray, topn, actorlist):
     
         phaseinfo = np.array([self.phasedict[x] for x in obsnodearray])
                 
-        endindex = int(np.ceil(topn*actorlistsize))
+        endindex = int(np.ceil(topn*len(actorlist)))
         
         Di_sim  = Diactors_sim[obsnodearray-1, phaseinfo , 0:endindex]
         Di_th = Diactors_th[obsnodearray-1, phaseinfo , 0:endindex]
-          
+        Didist_th = Diactorsdist_th[obsnodearray-1, phaseinfo , 0:endindex]
+
+        ## find distances for dominant actor nodes 
+        Diactors_distances = {}
+        
+        for countactor, actor in enumerate(actorlist):
+            
+            Diactors_distances[actor]={}
+            
+            for countrank in range(5):
+                
+                tempind = np.where(Di_th[:,countrank]==actor)[0]
+            
+                Diactors_distances[actor][countrank+1] = (Didist_th[tempind, countrank])
+        
+        ## accuracy in detecting top 1 dominant nodes
         Acc = accuracy_score(Di_sim[:,0], Di_th[:,0])*100
         
         Topnacc= []
@@ -655,7 +802,8 @@ class Divf_Metrics():
             
             Topnacc.append(np.mean(np.array([1 if Di_sim[obsind, k] in Di_th[obsind,:] else 0 for k in range(endindex)] )))
         
-        return Acc, np.array(Topnacc)
+        return Acc, np.array(Topnacc), Di_sim, Di_th, Diactors_distances
+    
     
     def get_Kendallstau(self,  Diactors_sim, Diactors_th, obsnodearray, topn, actorlistsize):
     
@@ -670,6 +818,36 @@ class Divf_Metrics():
         
         return Kt, np.mean(Kt)
             
+    def get_mismatchnodes(self, Di_sim, Di_th, obsnodearray):
         
+        ind = np.array([np.where(Di_sim[:,k]!= Di_th[:,k])[0] for k in range(Di_sim.shape[1])])
         
+        return [obsnodearray[ind[k]] for k in range(ind.shape[0])]        
+    
+    ## get voltage influence metric for nodes 
+    def get_voltinfmetric(self, Didistdict_th, actorlist, topn):
         
+        """
+        input: IT-distances for each actor nodes
+        output: vif values for each actor nodes and actor nodes arranged 
+            on the basis of their influencing capapcity
+            
+        """
+        impfactor= [1, 0.5, 0.25, 0.125 ,0.0625 ]
+        
+        vif = {}
+        for countactor,actor in enumerate(actorlist):
+            result = 0
+            for countrank in range(topn):
+                
+                result  = result + np.sum(np.reciprocal(Didistdict_th[actor][countrank+1] ) )*impfactor[countrank]
+            
+            vif[actor] = result
+            
+        max_value =   max(vif.values())
+        
+        vif = {k: v / max_value for k, v in vif.items()}    
+        
+        a = sorted(vif.items(), key=lambda x: x[1], reverse=True) 
+        
+        return vif, np.array([a[ind][0] for ind in range(len(a))])   
